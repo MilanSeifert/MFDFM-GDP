@@ -27,11 +27,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   vim \
   python3 \
   python3-pip \
+  python3-venv \
   poppler-utils \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install Python PDF library
-RUN pip3 install --break-system-packages pypdf
+# Install Python libraries
+RUN pip3 install --break-system-packages \
+  pypdf \
+  numpy \
+  pandas \
+  scipy \
+  statsmodels \
+  matplotlib
 
 # Ensure default node user has access to /usr/local/share
 RUN mkdir -p /usr/local/share/npm-global && \
