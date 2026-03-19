@@ -25,7 +25,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   jq \
   nano \
   vim \
+  python3 \
+  python3-pip \
+  poppler-utils \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Python PDF library
+RUN pip3 install --break-system-packages pypdf
 
 # Ensure default node user has access to /usr/local/share
 RUN mkdir -p /usr/local/share/npm-global && \
