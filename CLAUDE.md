@@ -216,3 +216,56 @@ Revision: `E[BCI_t | I_{v+1}] = B_{v+1} I_{v+1} = Σ_j b_{v+1,j} (y_{i_j,t_j} - 
    - Two-step estimation: Giannone, Reichlin, Small (2008); Doz, Giannone, Reichlin (2011)
    - Observation weights: Koopman & Harvey (2003)
    - News decomposition: Banbura & Modugno (2014)
+
+---
+
+## Code Structure
+
+The implementation lives in the `mfdfm/` Python package with tests in `tests/` and a runnable demo in `examples/`.
+
+### Package layout
+
+```
+mfdfm/
+├── __init__.py          # Public API — exports the MFDFM class
+├── data.py              # MFData: mixed-frequency data container
+├── estimation.py        # Two-step parameter estimation (PCA + OLS + VAR)
+├── kalman.py            # General-purpose Kalman filter & RTS smoother
+├── model.py             # MFDFM class — main entry point
+└── decomposition.py     # Observation weights & news decomposition
+
+tests/
+├── conftest.py          # Synthetic data generator fixture
+└── test_model.py        # 25 unit/integration tests (unittest)
+
+examples/
+└── demo.py              # End-to-end demo with plots (generates mfdfm_demo.png)
+```
+
+### Module responsibilities
+
+| Module | Role |
+|---|---|
+| `data.py` | `MFData` class. Reorders variables as [GDP, quarterly, monthly], standardizes (zero-mean, unit-variance), enforces quarterly NaN at non-quarter months, finds the balanced monthly panel for PCA via greedy variable-dropping. |
+| `estimation.py` | **Step 1** of Galli (2017). `estimate_pca_factors` runs PCA on the balanced panel. `estimate_loadings` runs OLS for all variables — monthly vars regress on f^PC directly, quarterly vars regress on G(L)-aggregated factors at quarter-end months with the 9/3 variance correction. `estimate_var` fits VAR(p) on the PC factors. `select_n_factors` / `select_n_lags` implement BIC selection (eqs. 10-11). |
+| `kalman.py` | Self-contained Kalman filter and RTS smoother. Accepts time-varying H_t and R_t via callables. Uses the **select-observed** approach: at each t only rows with non-NaN data participate in the update (equivalent to the zero-out + small-c method but cleaner). Uses **Joseph form** for covariance updates and `np.linalg.solve` instead of explicit matrix inversion for numerical stability. Stores per-step innovations, gains, and covariances for downstream decomposition. |
+| `model.py` | `MFDFM` class. Orchestrates the full pipeline: builds the companion-form transition (F, Q) with state ξ = [f_t; f_{t-1}; f_{t-2}], constructs the measurement equation (H with 1/3 averaging for quarterly rows, R with 1/3·σ² for quarterly and σ² for monthly), initializes via discrete Lyapunov equation, runs the Kalman smoother, and exposes results. Public API: `fit()`, `business_cycle_index`, `bci_variance`, `bci_accuracy`, `smoothed_factors`, `fitted_values()`, `predict()`, `observation_weights()`, `news_decomposition()`, `summary()`, `save()` / `load()`. Supports `n_factors="auto"` and `n_lags="auto"` for BIC-based selection. |
+| `decomposition.py` | Observation weights via Koopman & Harvey (2003) filtered-weight algorithm using stored Kalman gains. News decomposition via Banbura & Modugno (2014): identifies new data releases between two vintages, computes news content I_j = y - E[y\|Ω_v], and decomposes BCI revision into per-indicator contributions. |
+
+### How to run
+
+```bash
+# Tests (25 tests, ~8 seconds)
+python3 -m unittest tests.test_model -v
+
+# Demo (generates mfdfm_demo.png and prints model summary)
+python3 examples/demo.py
+```
+
+### Key design decisions
+
+- **Select-observed Kalman filter**: Instead of zeroing H rows and padding R with a small constant c for unobserved variables (paper's approach), unobserved rows are excluded from the update entirely. Mathematically equivalent, avoids invertibility hacks, and faster for large n with many missing values.
+- **Greedy balanced panel**: The PCA balanced panel finder iteratively drops the variable that most constrains panel length, until a contiguous block of ≥ 15 years is found. Handles ragged starts robustly.
+- **No autocorrelated idiosyncratic errors**: Following the paper's finding that Θ ≠ 0 worsens performance, u_t is i.i.d.
+- **Sign convention**: Factor 1 is signed so that the GDP loading is positive.
+- **Data preprocessing is external**: The model assumes input data is already seasonally adjusted, transformed to stationarity (3-month diffs / QoQ growth rates), and at monthly frequency. Seasonal adjustment (X-13ARIMA-SEATS) and stationarity transforms are the caller's responsibility.
