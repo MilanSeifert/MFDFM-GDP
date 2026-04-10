@@ -4,3 +4,5 @@ scipy
 statsmodels
 matplotlib
 pypdf
+fredapi
+ipykernel

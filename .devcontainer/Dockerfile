@@ -38,7 +38,9 @@ RUN pip3 install --break-system-packages \
   pandas \
   scipy \
   statsmodels \
-  matplotlib
+  matplotlib \
+  fredapi \
+  ipykernel
 
 # Ensure default node user has access to /usr/local/share
 RUN mkdir -p /usr/local/share/npm-global && \
