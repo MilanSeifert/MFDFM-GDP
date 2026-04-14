@@ -8,7 +8,6 @@ Sources
 Usage
 -----
     # Fetch CPI from SNB (no API key needed):
-    python3 examples/fetch_data.py --snb-cpi
 
     # Fetch FRED series (API key required):
     export FRED_API_KEY="your_key_here"
@@ -38,6 +37,7 @@ import io
 import os
 import sys
 import warnings
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -50,11 +50,11 @@ import pandas as pd
 SNB_CPI_URL = "https://data.snb.ch/api/cube/plkoprinfla/data/csv/en"
 
 
-def fetch_snb_cpi(transform: str = "log_diff3") -> pd.Series:
+def fetch_snb_cpi(transform: str = "rate") -> pd.Series:
     """Download Swiss CPI from the SNB open data API.
 
     Returns a monthly Series (MS freq) with the requested transformation
-    applied (default: 3-month log-difference, as required by the MFDFM).
+    applied (default: no transform — TLK is already a YoY inflation rate).
 
     Parameters
     ----------
@@ -64,30 +64,32 @@ def fetch_snb_cpi(transform: str = "log_diff3") -> pd.Series:
     resp = requests.get(SNB_CPI_URL, timeout=30)
     resp.raise_for_status()
 
-    # SNB CSVs have a variable number of metadata/comment rows before the
-    # actual data.  The data block starts at the first line whose first field
-    # looks like a date (YYYY-MM or YYYY).
-    lines = resp.text.splitlines()
-    data_lines = [l for l in lines if l and l[0].isdigit()]
-    if not data_lines:
-        raise ValueError("Could not find data rows in SNB CPI response.")
+    # SNB CSV format (2024+): BOM + metadata rows, then a blank line, then
+    # a header "Date";"D0";"Value" followed by data rows with quoted fields.
+    # Multiple D0 codes appear per date; "TLK" is the national total inflation rate.
+    lines = resp.text.lstrip("\ufeff").splitlines()
 
-    # Find the header row (last non-data line before the data block)
-    data_start = next(i for i, l in enumerate(lines) if l and l[0].isdigit())
-    # SNB uses semicolons; the header is the line just before the data
-    header_line = lines[data_start - 1] if data_start > 0 else None
-
-    raw_csv = "\n".join(
-        ([header_line] if header_line else []) + data_lines
+    # Find header line (contains "Date" and "Value")
+    header_idx = next(
+        (i for i, l in enumerate(lines) if '"Date"' in l or "Date" in l.split(";")),
+        None,
     )
-    df = pd.read_csv(io.StringIO(raw_csv), sep=";")
+    if header_idx is None:
+        raise ValueError("Could not find header row in SNB CPI response.")
 
-    # First column is the date, second is the value (total CPI index)
-    date_col, val_col = df.columns[0], df.columns[1]
+    raw_csv = "\n".join(lines[header_idx:])
+    df = pd.read_csv(io.StringIO(raw_csv), sep=";")
+    df.columns = [c.strip().strip('"') for c in df.columns]
+
+    # Filter for the total CPI YoY rate (TLK = national total, year-on-year %)
+    if "D0" in df.columns:
+        df = df[df["D0"].str.strip().str.strip('"') == "TLK"]
+
+    date_col, val_col = df.columns[0], df.columns[-1]
     s = pd.to_numeric(df[val_col], errors="coerce")
-    s.index = pd.to_datetime(df[date_col].astype(str).str[:7], format="%Y-%m")
+    s.index = pd.to_datetime(df[date_col].astype(str).str.strip('"').str[:7], format="%Y-%m")
     s = s.sort_index().resample("MS").mean()
-    s.name = "CPI_SNB"
+    s.name = "CPI_BFS"
 
     if transform == "log_diff3":
         log_s = np.log(s.clip(lower=1e-12))
@@ -179,14 +181,6 @@ SERIES = [
     # MONTHLY — Hard data / production
     # ------------------------------------------------------------------
     dict(
-        fred_id="CHEPROINDAISMEI",
-        label="PROIND",
-        freq="M",
-        transform="log_diff3",
-        sa=True,
-        notes="Switzerland Production in Industry, SA (OECD MEI)",
-    ),
-    dict(
         fred_id="PRMNTO01CHQ657S",
         label="PROMANTOT",
         freq="M",
@@ -212,17 +206,6 @@ SERIES = [
         transform="log_diff3",
         sa=True,
         notes="Infra-Annual Registered Unemployment and Job Vacancies: Total Economy: Registered Unemployment for Switzerland",
-    ),
-    # ------------------------------------------------------------------
-    # MONTHLY — Prices
-    # ------------------------------------------------------------------
-    dict(
-        fred_id="CHECPIALLMINMEI",
-        label="CPI",
-        freq="M",
-        transform="log_diff3",
-        sa=False,
-        notes="Consumer Price Indices (CPIs, HICPs), COICOP 1999: Consumer Price Index: Total for Switzerland ",
     ),
     # ------------------------------------------------------------------
     # MONTHLY — Financial / monetary
@@ -261,7 +244,11 @@ SERIES = [
 # Helper functions
 # ---------------------------------------------------------------------------
 
-def _apply_transform(series: pd.Series, transform: str, freq: str) -> pd.Series:
+def _apply_transform(
+    series: pd.Series,
+    transform: Literal["log_diff3", "log_diff_q", "diff3", "diff_q", "rate"],
+    freq: str,
+) -> pd.Series:
     """Apply stationarity transformation to a raw series.
 
     Parameters
@@ -305,15 +292,18 @@ def _to_monthly_index(series: pd.Series, freq: str) -> pd.Series:
     if series.empty:
         return series
 
-    # Resample to monthly mean first (handles daily / irregular series)
-    monthly = series.resample("MS").mean()
-
     if freq == "Q":
-        # Keep only quarter-end months, set others to NaN
-        mask = monthly.index.month.isin([3, 6, 9, 12])
-        monthly = monthly.where(mask)
-
-    return monthly
+        # FRED dates quarterly series at quarter-start (Jan/Apr/Jul/Oct).
+        # resample("QE") normalises any convention to quarter-end dates,
+        # then we map e.g. 2020-03-31 → 2020-03-01 (month-start) and
+        # reindex onto a full monthly MS grid with NaN in non-quarter months.
+        qe = series.resample("QE").mean()
+        qe.index = qe.index.to_period("M").to_timestamp()
+        start = series.index.min().to_period("M").to_timestamp()
+        end = series.index.max().to_period("M").to_timestamp()
+        return qe.reindex(pd.date_range(start, end, freq="MS"))
+    else:
+        return series.resample("MS").mean()
 
 
 def fetch_series(fred, entry: dict, start_date: str, end_date: str) -> pd.Series | None:
@@ -339,11 +329,14 @@ def fetch_series(fred, entry: dict, start_date: str, end_date: str) -> pd.Series
     raw = raw.dropna()
     raw.index = pd.DatetimeIndex(raw.index)
 
-    # Resample to monthly and align to quarter-end months for quarterly series
-    monthly = _to_monthly_index(raw, freq)
-
-    # Apply stationarity transform
-    transformed = _apply_transform(monthly, transform, freq)
+    if freq == "Q":
+        # Apply QoQ transform at native quarterly frequency first (so shift(1)
+        # means one quarter, not one month), then expand to the monthly grid.
+        transformed = _apply_transform(raw, transform, freq)
+        transformed = _to_monthly_index(transformed, freq)
+    else:
+        transformed = _to_monthly_index(raw, freq)
+        transformed = _apply_transform(transformed, transform, freq)
 
     transformed.name = label
     return transformed
@@ -448,10 +441,7 @@ def main():
 
     data, quarterly_vars = build_dataset(api_key=api_key)
 
-    # Use SNB CPI instead of FRED CPI
-    if "CPI" in data.columns:
-        data = data.drop(columns=["CPI"])
-    data["CPI_SNB"] = cpi_snb
+    data["CPI_BFS"] = cpi_snb
 
     os.makedirs("data", exist_ok=True)
     data.to_csv("data/swiss.csv")
