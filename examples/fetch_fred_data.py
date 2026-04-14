@@ -68,12 +68,12 @@ SERIES = [
     # QUARTERLY — GDP and components  (target + auxiliary quarterly vars)
     # ------------------------------------------------------------------
     dict(
-        fred_id="CHNGDPNQDSMEI",
+        fred_id="CLVMNACSAB1GQCH",
         label="GDP",
         freq="Q",
         transform="log_diff_q",
         sa=True,
-        notes="Switzerland Real GDP, chained volumes, SA (OECD MEI)",
+        notes="Real Gross Domestic Product for Switzerland",
     ),
     dict(
         fred_id="NAEXKP02CHQ657S",
@@ -119,14 +119,6 @@ SERIES = [
     # MONTHLY — Hard data / production
     # ------------------------------------------------------------------
     dict(
-        fred_id="CHLAMA01CHM661S",
-        label="INDPRO",
-        freq="M",
-        transform="log_diff3",
-        sa=True,
-        notes="Switzerland Industrial Production Index (OECD MEI), SA",
-    ),
-    dict(
         fred_id="CHEPROINDAISMEI",
         label="PROIND",
         freq="M",
@@ -135,31 +127,31 @@ SERIES = [
         notes="Switzerland Production in Industry, SA (OECD MEI)",
     ),
     dict(
-        fred_id="CHNFACTOISMEI",
-        label="MNFORDERS",
+        fred_id="PRMNTO01CHQ657S",
+        label="PROMANTOT",
         freq="M",
         transform="log_diff3",
         sa=True,
-        notes="Switzerland Manufacturing New Orders (OECD MEI)",
+        notes="Production: Manufacturing: Total Manufacturing for Switzerland",
     ),
     # ------------------------------------------------------------------
     # MONTHLY — Labor market
     # ------------------------------------------------------------------
     dict(
-        fred_id="CHEUNR",
+        fred_id="SLUEM1524ZSCHE",
         label="UNEMP",
         freq="M",
         transform="rate",
-        sa=True,
+        sa=False,
         notes="Switzerland Unemployment Rate, SA (OECD)",
     ),
     dict(
-        fred_id="CHEEMPRTT01CHM156S",
-        label="EMPL",
+        fred_id="LMUNRLTTCHM647S",
+        label="UNEMPL",
         freq="M",
         transform="log_diff3",
         sa=True,
-        notes="Switzerland Employment (OECD MEI)",
+        notes="Infra-Annual Registered Unemployment and Job Vacancies: Total Economy: Registered Unemployment for Switzerland",
     ),
     # ------------------------------------------------------------------
     # MONTHLY — Prices
@@ -170,51 +162,11 @@ SERIES = [
         freq="M",
         transform="log_diff3",
         sa=False,
-        notes="Switzerland CPI All Items (OECD MEI), not SA",
-    ),
-    dict(
-        fred_id="CPALTT01CHM657N",
-        label="CPITOT",
-        freq="M",
-        transform="log_diff3",
-        sa=False,
-        notes="Switzerland CPI Total (OECD), not SA",
-    ),
-    dict(
-        fred_id="CHEPPIALLMINMEI",
-        label="PPI",
-        freq="M",
-        transform="log_diff3",
-        sa=False,
-        notes="Switzerland Producer Prices Index (OECD MEI)",
+        notes="Consumer Price Indices (CPIs, HICPs), COICOP 1999: Consumer Price Index: Total for Switzerland ",
     ),
     # ------------------------------------------------------------------
     # MONTHLY — Financial / monetary
     # ------------------------------------------------------------------
-    dict(
-        fred_id="IRLTST01CHM156N",
-        label="LTRATE",
-        freq="M",
-        transform="rate",
-        sa=False,
-        notes="Switzerland Long-Term Government Bond Yields (OECD MEI)",
-    ),
-    dict(
-        fred_id="IRSTCI01CHM156N",
-        label="STRATE",
-        freq="M",
-        transform="rate",
-        sa=False,
-        notes="Switzerland Immediate Call Money/Interbank Rate (OECD MEI)",
-    ),
-    dict(
-        fred_id="IRSTCB01CHM156N",
-        label="CB_RATE",
-        freq="M",
-        transform="rate",
-        sa=False,
-        notes="Switzerland Central Bank Policy Rate (OECD MEI)",
-    ),
     dict(
         fred_id="DEXSZUS",
         label="CHFUSD",
@@ -223,83 +175,24 @@ SERIES = [
         sa=False,
         notes="Switzerland / U.S. Foreign Exchange Rate (CHF per USD), daily → monthly avg",
     ),
-    dict(
-        fred_id="MABMM301CHM189S",
-        label="M1",
-        freq="M",
-        transform="log_diff3",
-        sa=True,
-        notes="Switzerland M1 Money Supply, SA (OECD MEI)",
-    ),
-    dict(
-        fred_id="MABMM302CHM189S",
-        label="M2",
-        freq="M",
-        transform="log_diff3",
-        sa=True,
-        notes="Switzerland M2 Money Supply, SA (OECD MEI)",
-    ),
-    dict(
-        fred_id="MABMM303CHM189S",
-        label="M3",
-        freq="M",
-        transform="log_diff3",
-        sa=True,
-        notes="Switzerland M3 Money Supply, SA (OECD MEI)",
-    ),
     # ------------------------------------------------------------------
     # MONTHLY — Trade
     # ------------------------------------------------------------------
     dict(
         fred_id="XTIMVA01CHM667S",
-        label="EXPORTS",
-        freq="M",
-        transform="log_diff3",
-        sa=True,
-        notes="Switzerland Exports of Goods, value SA (OECD MEI)",
-    ),
-    dict(
-        fred_id="XTIMVA02CHM667S",
         label="IMPORTS",
         freq="M",
         transform="log_diff3",
         sa=True,
-        notes="Switzerland Imports of Goods, value SA (OECD MEI)",
+        notes="International Merchandise Trade Statistics: Imports: Commodities for Switzerland",
     ),
-    # ------------------------------------------------------------------
-    # MONTHLY — Surveys / soft data / leading indicators
-    # ------------------------------------------------------------------
     dict(
-        fred_id="CHELORSGPNOSTP",
-        label="CLI",
+        fred_id="XTEXVA01CHM664S",
+        label="EXPORTS",
         freq="M",
         transform="log_diff3",
         sa=True,
-        notes="Switzerland Composite Leading Indicator, amplitude-adjusted (OECD)",
-    ),
-    dict(
-        fred_id="LOCOBSNO02CHM661S",
-        label="BUS_CONF",
-        freq="M",
-        transform="rate",
-        sa=True,
-        notes="Switzerland Business Confidence: Industrial (OECD)",
-    ),
-    dict(
-        fred_id="CSCICP02CHM460S",
-        label="CONS_CONF",
-        freq="M",
-        transform="rate",
-        sa=True,
-        notes="Switzerland Consumer Confidence Indicator (OECD)",
-    ),
-    dict(
-        fred_id="LOLITONOSTP",
-        label="OECD_CLI",
-        freq="M",
-        transform="log_diff3",
-        sa=True,
-        notes="OECD Total CLI (global, used as foreign indicator)",
+        notes="International Merchandise Trade Statistics: Exports: Commodities for Switzerland",
     ),
 ]
 
