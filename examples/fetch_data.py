@@ -29,17 +29,15 @@ Notes
 - A free FRED API key is required: https://fred.stlouisfed.org/docs/api/api_key.html
 - Many Swiss series on FRED come from OECD MEI; verify codes at fred.stlouisfed.org
 - Series flagged transform="rate" are assumed stationary (interest/unemployment rates);
-  all others are log-differenced to remove trends.
+  all others are percentage-changed (QoQ or 3-month) to remove trends.
 - Seasonal adjustment: most OECD MEI series are already SA; raw series are noted.
 """
 
 import io
 import os
 import sys
-import warnings
 from typing import Literal
 
-import numpy as np
 import pandas as pd
 
 
@@ -58,7 +56,7 @@ def fetch_snb_cpi(transform: str = "rate") -> pd.Series:
 
     Parameters
     ----------
-    transform : "log_diff3" | "rate" | "none"
+    transform : "pct_change3" | "rate" | "none"
     """
     import requests
     resp = requests.get(SNB_CPI_URL, timeout=30)
@@ -91,9 +89,8 @@ def fetch_snb_cpi(transform: str = "rate") -> pd.Series:
     s = s.sort_index().resample("MS").mean()
     s.name = "CPI_BFS"
 
-    if transform == "log_diff3":
-        log_s = np.log(s.clip(lower=1e-12))
-        s = log_s - log_s.shift(3)
+    if transform == "pct_change3":
+        s = s.pct_change(3)
     elif transform == "none":
         pass
     # "rate" → no transform
@@ -111,17 +108,19 @@ def fetch_snb_cpi(transform: str = "rate") -> pd.Series:
 #   fred_id   : FRED series identifier
 #   label     : short name used as DataFrame column
 #   freq      : "M" (monthly) or "Q" (quarterly)
-#   transform : "log_diff3"  → 3-month log-difference  (monthly levels/indices)
-#               "log_diff_q" → QoQ log-difference      (quarterly levels)
-#               "diff3"      → 3-month arithmetic diff  (monthly rates/%-points)
-#               "diff_q"     → QoQ arithmetic diff      (quarterly rates)
-#               "rate"       → leave as-is (already stationary rate/index)
+#   transform : "pct_change3" → 3-month percentage change  (monthly levels/indices)
+#               "pct_change_q"→ QoQ percentage change       (quarterly levels)
+#               "diff3"       → 3-month arithmetic diff     (monthly rates/%-points)
+#               "diff_q"      → QoQ arithmetic diff         (quarterly rates)
+#               "rate"        → leave as-is (already stationary rate/index)
 #   sa        : True if the FRED series is already seasonally adjusted
 #   notes     : free-text description
 #
-# All transformations follow Galli (2017):
-#   - Monthly non-stationary series: Δ₃ ln x_t  = ln(x_t) − ln(x_{t−3})
-#   - Quarterly non-stationary:      Δ₁ ln x_t  = ln(x_t) − ln(x_{t−1})  (QoQ)
+# Stationarity transformations (consistent with Galli, 2017, which allows
+# either differences or growth rates; we use percentage changes, matching
+# official SECO/SNB quarter-on-quarter GDP reporting conventions):
+#   - Monthly non-stationary series: x_t / x_{t-3} - 1
+#   - Quarterly non-stationary:      x_t / x_{t-1} - 1 (QoQ)
 #   - Stationary rates: no transformation needed
 # ---------------------------------------------------------------------------
 
@@ -133,7 +132,7 @@ SERIES = [
         fred_id="CLVMNACSAB1GQCH",
         label="GDP",
         freq="Q",
-        transform="log_diff_q",
+        transform="pct_change_q",
         sa=True,
         notes="Real Gross Domestic Product for Switzerland",
     ),
@@ -141,7 +140,7 @@ SERIES = [
         fred_id="NAEXKP02CHQ657S",
         label="GDP_CONS",
         freq="Q",
-        transform="log_diff_q",
+        transform="pct_change_q",
         sa=True,
         notes="Switzerland Private Final Consumption Expenditure, real SA (OECD)",
     ),
@@ -149,7 +148,7 @@ SERIES = [
         fred_id="NAEXKP03CHQ657S",
         label="GDP_GOV",
         freq="Q",
-        transform="log_diff_q",
+        transform="pct_change_q",
         sa=True,
         notes="Switzerland Government Final Consumption Expenditure, real SA (OECD)",
     ),
@@ -157,7 +156,7 @@ SERIES = [
         fred_id="NAEXKP04CHQ657S",
         label="GDP_INVEST",
         freq="Q",
-        transform="log_diff_q",
+        transform="pct_change_q",
         sa=True,
         notes="Switzerland Gross Fixed Capital Formation, real SA (OECD)",
     ),
@@ -165,7 +164,7 @@ SERIES = [
         fred_id="NAEXKP06CHQ657S",
         label="GDP_EXP",
         freq="Q",
-        transform="log_diff_q",
+        transform="pct_change_q",
         sa=True,
         notes="Switzerland Exports of Goods and Services, real SA (OECD)",
     ),
@@ -173,7 +172,7 @@ SERIES = [
         fred_id="NAEXKP07CHQ657S",
         label="GDP_IMP",
         freq="Q",
-        transform="log_diff_q",
+        transform="pct_change_q",
         sa=True,
         notes="Switzerland Imports of Goods and Services, real SA (OECD)",
     ),
@@ -184,7 +183,7 @@ SERIES = [
         fred_id="PRMNTO01CHQ657S",
         label="PROMANTOT",
         freq="M",
-        transform="log_diff3",
+        transform="pct_change3",
         sa=True,
         notes="Production: Manufacturing: Total Manufacturing for Switzerland",
     ),
@@ -203,7 +202,7 @@ SERIES = [
         fred_id="LMUNRLTTCHM647S",
         label="UNEMPL",
         freq="M",
-        transform="log_diff3",
+        transform="pct_change3",
         sa=True,
         notes="Infra-Annual Registered Unemployment and Job Vacancies: Total Economy: Registered Unemployment for Switzerland",
     ),
@@ -214,7 +213,7 @@ SERIES = [
         fred_id="DEXSZUS",
         label="CHFUSD",
         freq="M",
-        transform="log_diff3",
+        transform="pct_change3",
         sa=False,
         notes="Switzerland / U.S. Foreign Exchange Rate (CHF per USD), daily → monthly avg",
     ),
@@ -225,7 +224,7 @@ SERIES = [
         fred_id="XTIMVA01CHM667S",
         label="IMPORTS",
         freq="M",
-        transform="log_diff3",
+        transform="pct_change3",
         sa=True,
         notes="International Merchandise Trade Statistics: Imports: Commodities for Switzerland",
     ),
@@ -233,7 +232,7 @@ SERIES = [
         fred_id="XTEXVA01CHM664S",
         label="EXPORTS",
         freq="M",
-        transform="log_diff3",
+        transform="pct_change3",
         sa=True,
         notes="International Merchandise Trade Statistics: Exports: Commodities for Switzerland",
     ),
@@ -246,7 +245,7 @@ SERIES = [
 
 def _apply_transform(
     series: pd.Series,
-    transform: Literal["log_diff3", "log_diff_q", "diff3", "diff_q", "rate"],
+    transform: Literal["pct_change3", "pct_change_q", "diff3", "diff_q", "rate"],
     freq: str,
 ) -> pd.Series:
     """Apply stationarity transformation to a raw series.
@@ -254,25 +253,19 @@ def _apply_transform(
     Parameters
     ----------
     series    : raw level/rate series (monthly freq)
-    transform : one of "log_diff3", "log_diff_q", "diff3", "diff_q", "rate"
+    transform : one of "pct_change3", "pct_change_q", "diff3", "diff_q", "rate"
     freq      : "M" or "Q" (determines diff lag)
     """
     if transform == "rate":
         return series
 
-    if transform == "log_diff3":
-        # 3-month log-difference: ln(x_t) - ln(x_{t-3})
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            log_s = np.log(series.clip(lower=1e-12))
-        return log_s - log_s.shift(3)
+    if transform == "pct_change3":
+        # 3-month percentage change: x_t / x_{t-3} - 1
+        return series.pct_change(3)
 
-    if transform == "log_diff_q":
-        # QoQ log-difference: ln(x_t) - ln(x_{t-1}) on quarterly data
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            log_s = np.log(series.clip(lower=1e-12))
-        return log_s - log_s.shift(1)
+    if transform == "pct_change_q":
+        # QoQ percentage change: x_t / x_{t-1} - 1 on quarterly data
+        return series.pct_change(1)
 
     if transform == "diff3":
         return series - series.shift(3)
