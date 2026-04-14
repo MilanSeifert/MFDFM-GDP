@@ -40,6 +40,7 @@ RUN pip3 install --break-system-packages \
   statsmodels \
   matplotlib \
   fredapi \
+  requests \
   ipykernel
 
 # Ensure default node user has access to /usr/local/share

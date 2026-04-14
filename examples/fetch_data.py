@@ -1,20 +1,21 @@
-"""Fetch Swiss macro data from FRED for use with the MFDFM model.
+"""Fetch Swiss macro data for use with the MFDFM model.
 
-Downloads Swiss GDP (quarterly target) and a set of monthly/quarterly Swiss
-macro indicators from FRED, applies the transformations required by the model
-(3-month log-differences for monthly levels, QoQ log-differences for quarterly
-levels), and saves a ready-to-use DataFrame as a CSV and a pickled dict.
+Sources
+-------
+- FRED (Federal Reserve Bank of St. Louis) — GDP and macro indicators
+- SNB  (Swiss National Bank open data API) — CPI (no API key needed)
 
 Usage
 -----
-    export FRED_API_KEY="your_key_here"   # get a free key at fred.stlouisfed.org
-    python3 examples/fetch_fred_data.py
+    # Fetch CPI from SNB (no API key needed):
+    python3 examples/fetch_data.py --snb-cpi
 
-    # Or pass the key directly:
-    python3 examples/fetch_fred_data.py --api-key YOUR_KEY
+    # Fetch FRED series (API key required):
+    export FRED_API_KEY="your_key_here"
+    python3 examples/fetch_data.py --api-key YOUR_KEY
 
     # Change output paths:
-    python3 examples/fetch_fred_data.py --out-csv data/swiss.csv --out-pkl data/swiss.pkl
+    python3 examples/fetch_data.py --out-csv data/swiss.csv --out-pkl data/swiss.pkl
 
 Output
 ------
@@ -33,13 +34,72 @@ Notes
 - Seasonal adjustment: most OECD MEI series are already SA; raw series are noted.
 """
 
-import argparse
+import io
 import os
 import sys
 import warnings
 
 import numpy as np
 import pandas as pd
+
+
+# ---------------------------------------------------------------------------
+# SNB CPI fetcher
+# ---------------------------------------------------------------------------
+
+SNB_CPI_URL = "https://data.snb.ch/api/cube/plkoprinfla/data/csv/en"
+
+
+def fetch_snb_cpi(transform: str = "log_diff3") -> pd.Series:
+    """Download Swiss CPI from the SNB open data API.
+
+    Returns a monthly Series (MS freq) with the requested transformation
+    applied (default: 3-month log-difference, as required by the MFDFM).
+
+    Parameters
+    ----------
+    transform : "log_diff3" | "rate" | "none"
+    """
+    import requests
+    resp = requests.get(SNB_CPI_URL, timeout=30)
+    resp.raise_for_status()
+
+    # SNB CSVs have a variable number of metadata/comment rows before the
+    # actual data.  The data block starts at the first line whose first field
+    # looks like a date (YYYY-MM or YYYY).
+    lines = resp.text.splitlines()
+    data_lines = [l for l in lines if l and l[0].isdigit()]
+    if not data_lines:
+        raise ValueError("Could not find data rows in SNB CPI response.")
+
+    # Find the header row (last non-data line before the data block)
+    data_start = next(i for i, l in enumerate(lines) if l and l[0].isdigit())
+    # SNB uses semicolons; the header is the line just before the data
+    header_line = lines[data_start - 1] if data_start > 0 else None
+
+    raw_csv = "\n".join(
+        ([header_line] if header_line else []) + data_lines
+    )
+    df = pd.read_csv(io.StringIO(raw_csv), sep=";")
+
+    # First column is the date, second is the value (total CPI index)
+    date_col, val_col = df.columns[0], df.columns[1]
+    s = pd.to_numeric(df[val_col], errors="coerce")
+    s.index = pd.to_datetime(df[date_col].astype(str).str[:7], format="%Y-%m")
+    s = s.sort_index().resample("MS").mean()
+    s.name = "CPI_SNB"
+
+    if transform == "log_diff3":
+        log_s = np.log(s.clip(lower=1e-12))
+        s = log_s - log_s.shift(3)
+    elif transform == "none":
+        pass
+    # "rate" → no transform
+
+    print(f"  SNB CPI: {s.first_valid_index().strftime('%Y-%m')} → "
+          f"{s.last_valid_index().strftime('%Y-%m')}  "
+          f"({s.notna().sum()} observations)")
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -369,39 +429,11 @@ def build_dataset(
 # CLI entry point
 # ---------------------------------------------------------------------------
 
-def parse_args():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument(
-        "--api-key", default=None,
-        help="FRED API key (default: $FRED_API_KEY env var)",
-    )
-    p.add_argument(
-        "--start", default="1975-01-01",
-        help="Start date YYYY-MM-DD (default: 1975-01-01)",
-    )
-    p.add_argument(
-        "--end", default=None,
-        help="End date YYYY-MM-DD (default: today)",
-    )
-    p.add_argument(
-        "--out-csv", default="data/swiss_fred.csv",
-        help="Output CSV path (default: data/swiss_fred.csv)",
-    )
-    p.add_argument(
-        "--out-pkl", default="data/swiss_fred.pkl",
-        help="Output pickle path (default: data/swiss_fred.pkl)",
-    )
-    p.add_argument(
-        "--no-save", action="store_true",
-        help="Print summary only, do not write files",
-    )
-    args, _ = p.parse_known_args()
-    return args
-
-
 def main():
-    args = parse_args()
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--api-key", default=None, help="FRED API key (default: $FRED_API_KEY)")
+    args, _ = p.parse_known_args()
 
     api_key = args.api_key or os.environ.get("FRED_API_KEY")
     if not api_key:
@@ -411,43 +443,25 @@ def main():
             "Get a free key at: https://fred.stlouisfed.org/docs/api/api_key.html"
         )
 
-    data, quarterly_vars = build_dataset(
-        api_key=api_key,
-        start_date=args.start,
-        end_date=args.end,
-    )
+    print("Fetching CPI from SNB ...")
+    cpi_snb = fetch_snb_cpi()
 
-    print("\nFirst few rows (GDP + quarterly vars):")
-    q_cols = [c for c in quarterly_vars if c in data.columns]
-    print(data[q_cols].dropna(how="all").head(8).to_string())
+    data, quarterly_vars = build_dataset(api_key=api_key)
 
-    if not args.no_save:
-        import os as _os
-        for path in (args.out_csv, args.out_pkl):
-            _os.makedirs(_os.path.dirname(path) or ".", exist_ok=True)
+    # Use SNB CPI instead of FRED CPI
+    if "CPI" in data.columns:
+        data = data.drop(columns=["CPI"])
+    data["CPI_SNB"] = cpi_snb
 
-        data.to_csv(args.out_csv)
-        print(f"\nSaved CSV : {args.out_csv}")
+    os.makedirs("data", exist_ok=True)
+    data.to_csv("data/swiss.csv")
+    print("Saved CSV : data/swiss.csv")
 
-        import pickle
-        payload = {
-            "data": data,
-            "quarterly_vars": quarterly_vars,
-            "gdp_var": "GDP",
-        }
-        with open(args.out_pkl, "wb") as f:
-            pickle.dump(payload, f)
-        print(f"Saved PKL : {args.out_pkl}")
-
-    print("\n--- How to use with MFDFM ---")
-    print("import pickle")
-    print(f"payload = pickle.load(open('{args.out_pkl}', 'rb'))")
-    print("from mfdfm import MFDFM")
-    print("model = MFDFM(n_factors='auto', n_lags='auto')")
-    print("model.fit(payload['data'],")
-    print("          quarterly_vars=payload['quarterly_vars'],")
-    print("          gdp_var=payload['gdp_var'])")
-    print("bci = model.business_cycle_index")
+    import pickle
+    payload = {"data": data, "quarterly_vars": quarterly_vars, "gdp_var": "GDP"}
+    with open("data/swiss.pkl", "wb") as f:
+        pickle.dump(payload, f)
+    print("Saved PKL : data/swiss.pkl")
 
 
 if __name__ == "__main__":
