@@ -33,12 +33,16 @@ Notes
 - Seasonal adjustment: most OECD MEI series are already SA; raw series are noted.
 """
 
+import argparse
 import io
 import os
+import pickle
 import sys
 from typing import Literal
 
 import pandas as pd
+import requests
+from fredapi import Fred
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +62,6 @@ def fetch_snb_cpi(transform: str = "rate") -> pd.Series:
     ----------
     transform : "pct_change3" | "rate" | "none"
     """
-    import requests
     resp = requests.get(SNB_CPI_URL, timeout=30)
     resp.raise_for_status()
 
@@ -351,14 +354,6 @@ def build_dataset(
     data          : DataFrame, monthly DatetimeIndex, columns = labels
     quarterly_vars: list of column names that are quarterly
     """
-    try:
-        from fredapi import Fred
-    except ImportError:
-        sys.exit(
-            "fredapi is not installed. Add it to requirements.txt and rebuild "
-            "the container, or run: pip3 install --break-system-packages fredapi"
-        )
-
     fred = Fred(api_key=api_key)
 
     if end_date is None:
@@ -416,7 +411,6 @@ def build_dataset(
 # ---------------------------------------------------------------------------
 
 def main():
-    import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--api-key", default=None, help="FRED API key (default: $FRED_API_KEY)")
     args, _ = p.parse_known_args()
@@ -440,7 +434,6 @@ def main():
     data.to_csv("data/swiss.csv")
     print("Saved CSV : data/swiss.csv")
 
-    import pickle
     payload = {"data": data, "quarterly_vars": quarterly_vars, "gdp_var": "GDP"}
     with open("data/swiss.pkl", "wb") as f:
         pickle.dump(payload, f)
