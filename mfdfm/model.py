@@ -112,7 +112,7 @@ class MFDFM:
             self.r_ = int(self.n_factors_input)
 
         if self.n_lags_input == "auto":
-            self.p_, bic_p = select_n_lags(mfd, self.r_, max_p=6)
+            self.p_, bic_p = select_n_lags(mfd, self.r_, max_p=3)
             logger.info("BIC selected p=%d lags", self.p_)
         else:
             self.p_ = int(self.n_lags_input)
@@ -135,6 +135,12 @@ class MFDFM:
             self.Phi_[:, 0] *= -1
 
         # --- Build state-space matrices ---
+        if p > 3:
+            raise ValueError(
+                f"n_lags={p} > 3 is not supported: the state vector is fixed at "
+                "dimension 3r by the G(L) aggregation operator, which only "
+                "accommodates up to 3 VAR lags."
+            )
         self.F_, self.Q_ = self._build_transition(r, p)
 
         # --- Step 2: Kalman filter + smoother ---
