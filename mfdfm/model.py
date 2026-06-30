@@ -22,7 +22,11 @@ from mfdfm.estimation import (
     select_n_factors,
     select_n_lags,
 )
-from mfdfm.decomposition import compute_bci_weights, compute_news_revision
+from mfdfm.decomposition import (
+    compute_bci_weights,
+    compute_group_contributions,
+    compute_news_revision,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -353,17 +357,64 @@ class MFDFM:
             return result[[var_name]]
         return result
 
-    def observation_weights(self) -> Dict[str, np.ndarray]:
+    def observation_weights(
+        self, target_period: Optional[pd.Timestamp] = None
+    ) -> Dict[str, np.ndarray]:
         """Compute observation weights for the BCI (Koopman & Harvey, 2003).
+
+        Parameters
+        ----------
+        target_period : Timestamp, optional
+            Target month t. Defaults to the latest quarter-end month.
 
         Returns
         -------
         dict with:
-            'factor_weights': (T, T, n) — weight of indicator (k, i) on f_{t|T}
-            'bci_weights': (T, n) — weight of each indicator on the BCI at t
+            'bci_weights' : (T, n) — weight of observation y_{i,k} on BCI_t.
+            'target_time' : int — target time index.
+            'target_date' : Timestamp — target month.
+
+        The weights reconstruct the BCI exactly: ``sum(bci_weights * Y) == BCI_t``.
         """
         self._check_fitted()
-        return compute_bci_weights(self)
+        return compute_bci_weights(self, target_period)
+
+    def group_contributions(
+        self,
+        groups: Dict[str, str],
+        target_period: Optional[pd.Timestamp] = None,
+        other_label: str = "other",
+    ) -> Dict:
+        """Decompose a single month's BCI into additive group contributions.
+
+        Following Galli (2017, Section 4.2), the BCI is a weighted sum of all
+        observations; summing each indicator's contribution over the indicators
+        in a group gives that group's contribution to the BCI. The group
+        contributions sum exactly to the BCI at the target month.
+
+        Parameters
+        ----------
+        groups : dict {indicator name -> group label}
+            Maps each indicator to its group (e.g. one of the paper's indicator
+            categories). Indicators not listed are pooled under ``other_label``.
+        target_period : Timestamp, optional
+            Target month. Defaults to the latest quarter-end month.
+        other_label : str
+            Group label for indicators absent from ``groups``.
+
+        Returns
+        -------
+        dict with:
+            'contributions' : Series indexed by group (sums to BCI_t).
+            'by_indicator'  : Series indexed by indicator (sums to BCI_t).
+            'bci'           : float — BCI_t.
+            'target_time'   : int — target time index.
+            'target_date'   : Timestamp — target month.
+        """
+        self._check_fitted()
+        return compute_group_contributions(
+            self, groups, target_period, other_label
+        )
 
     def news_decomposition(
         self,
