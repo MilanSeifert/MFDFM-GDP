@@ -15,148 +15,210 @@ if TYPE_CHECKING:
     from mfdfm.model import MFDFM
 
 
-def compute_bci_weights(model: "MFDFM") -> Dict[str, np.ndarray]:
-    """Compute observation weights for the BCI.
+def compute_bci_weights(
+    model: "MFDFM", target_period: Optional[pd.Timestamp] = None
+) -> Dict[str, np.ndarray]:
+    """Compute observation weights for the BCI at a single target month.
 
     The smoothed factors can be written as a weighted sum of all observations:
         f_{t|T} = sum_k w_k(t,T) y_k
 
-    The BCI weights are the linear combination scaled by GDP loadings:
+    The BCI weights are that linear combination scaled by the GDP loadings:
         BCI_t = Lambda_gdp @ f_{t|T} = sum_k (Lambda_gdp @ w_k(t,T)) y_k
 
-    Uses the Koopman & Harvey (2003) two-step algorithm.
+    Uses the exact Koopman & Harvey (2003) observation-weight algorithm, so the
+    returned weights reconstruct the BCI to numerical precision (because the
+    filter is initialised at xi_0 = 0, the smoothed state is an exact linear
+    function of the observations).
+
+    Parameters
+    ----------
+    target_period : Timestamp, optional
+        Target month t. Defaults to the latest quarter-end month.
 
     Returns
     -------
     dict with:
-        'bci_weights' : (T,) array of arrays
-            For each target time t, a (T, n) array of BCI weights.
-            bci_weights[t][k, i] = weight of y_{i,k} on BCI_t.
+        'bci_weights' : (T, n) array
+            bci_weights[k, i] = weight of observation y_{i,k} on BCI_t.
+            Unobserved (k, i) entries are zero.
+        'target_time' : int — the target time index t.
+        'target_date' : Timestamp — the target month.
     """
     kf = model.kf_result_
-    F = model.F_
     T = model.data_.T
-    s = 3 * model.r_
     r = model.r_
     n = model.data_.n
     Lambda_gdp = model.Lambda_[0]  # (r,)
 
-    # Compute weights for a single target time t
-    # This is expensive for all t, so we do the most recent quarter-end
-    # as the primary use case.
-
-    # Find the latest quarter-end month
-    qe_idx = np.where(model.data_.is_quarter_end)[0]
-    if len(qe_idx) == 0:
-        t_target = T - 1
-    else:
-        t_target = qe_idx[-1]
+    t_target = _resolve_target_time(model, target_period)
 
     weights = _compute_smoother_weights_for_t(model, t_target)
 
-    # BCI weight for target t: Lambda_gdp @ w_k(t,T)[:r, :]
-    # weights shape: (T, s, n_obs_k) — but n_obs varies per k
-    # Simplify: compute aggregated BCI weight per indicator
+    # BCI weight per observation: Lambda_gdp @ w_k(t,T)[:r, :]
     bci_w = np.zeros((T, n))
-    Y = model.data_.Y
     for k in range(T):
         obs = kf.obs_idx[k]
         if len(obs) == 0:
             continue
-        # weights[k] is (s, m_k) where m_k = len(obs)
-        w_k = weights[k]  # (s, m_k)
-        # BCI contribution: Lambda_gdp @ w_k[:r, :]  (m_k,)
-        bci_contrib = Lambda_gdp @ w_k[:r, :]  # (m_k,)
-        bci_w[k, obs] = bci_contrib
+        w_k = weights[k]                  # (s, m_k)
+        bci_w[k, obs] = Lambda_gdp @ w_k[:r, :]   # (m_k,)
 
     return {
         "bci_weights": bci_w,
         "target_time": t_target,
+        "target_date": model.data_.dates[t_target],
     }
+
+
+def _resolve_target_time(
+    model: "MFDFM", target_period: Optional[pd.Timestamp]
+) -> int:
+    """Resolve a target month to a time index (default: latest quarter-end)."""
+    if target_period is not None:
+        dates = model.data_.dates
+        return int(np.argmin(np.abs(dates - pd.Timestamp(target_period))))
+    qe_idx = np.where(model.data_.is_quarter_end)[0]
+    return int(qe_idx[-1]) if len(qe_idx) else model.data_.T - 1
 
 
 def _compute_smoother_weights_for_t(
     model: "MFDFM", t_target: int
 ) -> List[np.ndarray]:
-    """Compute observation weights W_k(t,T) for all k, for a given target t.
+    """Exact observation weights W_k(t,T) for the smoothed state at t_target.
 
-    Step 1: Compute filtered weights W^f_k(t,T) using the Kalman gain.
-    Step 2: Convert to smoother weights.
+    Writes the smoothed state as xi_{t|T} = sum_k W_k(t,T) y_k, following
+    Koopman & Harvey (2003). The derivation works in two stages:
 
-    Returns list of (s, m_k) arrays, one per time step k.
+    1. Innovation-space weights A_k, where xi_{t|T} = sum_k A_k v_k and v_k is
+       the Kalman innovation (prediction error) at step k. Because innovations
+       are mutually uncorrelated, smoothing leaves the weights on *past*
+       innovations (k < t) equal to the predicted-state weights, while
+       current/future innovations (k >= t) enter through the smoothing cumulant
+       r_{t-1} (Durbin & Koopman, 2012):
+           A_k = F^{t-k} K_k                            for k < t
+           A_k = P_{t|t-1} (prod_{l=t}^{k-1} L_l') H_k' S_k^{-1}   for k >= t
+       with L_l = F (I - K_l H_l) and K_l the (update) Kalman gain.
+
+    2. Convert innovation weights to observation weights via v_k = y_k -
+       H_k xi_{k|k-1} and xi_{k|k-1} = sum_{j<k} Pi_{k,j} y_j, which gives
+           W_j = A_j - b_j F K_j,   b_{j-1} = A_j H_j + b_j L_j,  b_{T-1} = 0.
+
+    Returns a list of (s, m_k) arrays, one per time step k (m_k = number of
+    observed variables at k; empty for fully-missing months).
     """
     kf = model.kf_result_
     F = model.F_
     T = model.data_.T
     s = 3 * model.r_
+    I = np.eye(s)
 
-    # Step 1: Filtered weights for the filtered state at t_target
-    # W^f_k(t,T) = B_{t,k} K_k  for k <= t
-    # where B_{t,t} = I, B_{t,k} = B_{t,k+1} (F - K_{k+1} H_{k+1})  for k < t
-    # K_k = Kalman gain at step k
+    def _Ht_Sinv(k: int) -> np.ndarray:
+        # H_k' S_k^{-1}  (s, m_k), computed via a solve for stability.
+        H_k = kf.H_obs_list[k]            # (m_k, s)
+        S_k = kf.inn_cov[k]               # (m_k, m_k)
+        return np.linalg.solve(S_k, H_k).T
 
-    W_f = [None] * T
-    B = np.eye(s)  # B_{t,t} = I
+    # --- Stage 1: innovation-space weights A_k ---
+    A = [None] * T
+    P_tau = kf.P_pred[t_target]           # (s, s)
 
-    for k in range(t_target, -1, -1):
-        obs_k = kf.obs_idx[k]
-        if len(obs_k) == 0:
-            W_f[k] = np.zeros((s, 0))
-            # B doesn't change (no update at this step)
-            B = B @ F
-            continue
+    # Current/future innovations k >= t_target.
+    P_acc = I.copy()                      # prod_{l=t}^{k-1} L_l'  (built left-to-right)
+    for k in range(t_target, T):
+        obs = kf.obs_idx[k]
+        if len(obs) == 0:
+            A[k] = np.zeros((s, 0))
+            L_k = F
+        else:
+            A[k] = P_tau @ (P_acc @ _Ht_Sinv(k))      # (s, m_k)
+            L_k = F @ (I - kf.kalman_gains[k] @ kf.H_obs_list[k])
+        P_acc = P_acc @ L_k.T
 
-        K_k = kf.kalman_gains[k]      # (s, m_k)
-        H_k = kf.H_obs_list[k]        # (m_k, s)
+    # Past innovations j < t_target:  A_j = F^{t-j} K_j.
+    F_pow = I.copy()
+    for j in range(t_target - 1, -1, -1):
+        F_pow = F @ F_pow                 # F^{t-j}
+        obs = kf.obs_idx[j]
+        if len(obs) == 0:
+            A[j] = np.zeros((s, 0))
+        else:
+            A[j] = F_pow @ kf.kalman_gains[j]
 
-        W_f[k] = B @ K_k  # (s, m_k)
+    # --- Stage 2: innovation -> observation weights ---
+    W = [None] * T
+    b = np.zeros((s, s))                  # b_{T-1} = 0
+    for j in range(T - 1, -1, -1):
+        obs = kf.obs_idx[j]
+        if len(obs) == 0:
+            W[j] = np.zeros((s, 0))
+            b = b @ F                     # b_{j-1} = b_j F  (L_j = F when no update)
+        else:
+            K_j = kf.kalman_gains[j]
+            H_j = kf.H_obs_list[j]
+            W[j] = A[j] - b @ (F @ K_j)
+            L_j = F @ (I - K_j @ H_j)
+            b = A[j] @ H_j + b @ L_j
+    return W
 
-        if k > 0:
-            L_k = F - F @ K_k @ H_k   # F(I - K_k H_k) — prediction form
-            # Actually L_k = F - K_pred_k @ H_k where K_pred = F @ K_update
-            # But we use L_k = F @ (I - K_k @ H_k)
-            B = B @ (F - F @ K_k @ H_k)
 
-    # For k > t_target: W^f_k = 0 (future obs don't affect filtered state)
-    for k in range(t_target + 1, T):
-        obs_k = kf.obs_idx[k]
-        W_f[k] = np.zeros((s, len(obs_k)))
+def compute_group_contributions(
+    model: "MFDFM",
+    groups: Dict[str, str],
+    target_period: Optional[pd.Timestamp] = None,
+    other_label: str = "other",
+) -> Dict:
+    """Decompose a single month's BCI into additive group contributions.
 
-    # Step 2: Convert filtered weights to smoother weights
-    # W_k(t,T) = (I - P_{t|t-1} N_{t-1}) W^f_k(t,T)   for k < t
-    # W_k(t,T) = B*_{t,k} C_k                           for k >= t
-    # where C_k = H_k' (S_k^{-1} + K_k' N_k K_k) - F' N_k K_k
-    # This is complex — for the common use case, the filtered weights
-    # provide a good approximation. For full smoother weights, we
-    # use the J_t smoother gains.
+    Following Galli (2017, Section 4.2), the smoothed BCI is a weighted sum of
+    every observation:
+        BCI_t = sum_k sum_i w_{k,i}(t) y_{k,i}
+    Summing the per-observation contributions w_{k,i}(t) y_{k,i} over all months
+    k and over the indicators i belonging to a group g gives that group's
+    contribution to BCI_t. The contributions sum exactly to BCI_t.
 
-    # Simplified approach using smoother gains:
-    # xi_{t|T} = xi_{t|t} + J_t (xi_{t+1|T} - xi_{t+1|t})
-    # This means xi_{t|T} depends on xi_{t|t} (filtered at t)
-    # and xi_{t+1|T} (smoothed at t+1).
-    # We can propagate the weights backward through the smoother.
+    Parameters
+    ----------
+    groups : dict {indicator name -> group label}
+        Maps each indicator to its group (e.g. one of the paper's 17 indicator
+        categories). Indicators not listed are pooled under ``other_label``.
+    target_period : Timestamp, optional
+        Target month. Defaults to the latest quarter-end.
+    other_label : str
+        Group label for indicators absent from ``groups``.
 
-    W_s = [None] * T
+    Returns
+    -------
+    dict with:
+        'contributions' : Series indexed by group label (sums to BCI_t).
+        'by_indicator'  : Series indexed by indicator name (sums to BCI_t).
+        'bci'           : float — BCI_t (== contributions.sum()).
+        'target_time'   : int — target time index.
+        'target_date'   : Timestamp — target month.
+    """
+    res = compute_bci_weights(model, target_period)
+    bci_w = res["bci_weights"]                      # (T, n)
+    Y = np.nan_to_num(model.data_.Y, nan=0.0)       # (T, n)
 
-    # Initialize from smoother terminal condition: xi_{T|T} = xi_{T|t}
-    # So W_s at T = W_f at T (the filtered weights at T)
-    for k in range(T):
-        obs_k = kf.obs_idx[k]
-        W_s[k] = np.zeros((s, len(obs_k)))
+    # Per-indicator contribution: sum over all months k of w_{k,i} y_{k,i}.
+    contrib_by_var = (bci_w * Y).sum(axis=0)        # (n,)
+    var_names = model.data_.var_names
 
-    # For the target time, the smoothed state is:
-    # xi_{t|T} = xi_{t|t} + sum_{j=t}^{T-1} prod_{l=t}^{j-1} J_l @ (...)
-    # The simplest correct approach: start from the filtered weights
-    # and propagate smoother corrections.
+    by_indicator = pd.Series(contrib_by_var, index=var_names, name="contribution")
 
-    # Direct approach: xi_{t|T} depends on all y_k through the smoother.
-    # xi_{t|T} = A_t xi_{t|t} + (I - A_t) E_t  where A_t captures
-    # the smoother's backward propagation.
-    # Rather than implementing the full KH03 algorithm, use a practical
-    # approximation: the filtered weights capture most of the information.
+    # Aggregate to groups.
+    labels = [groups.get(v, other_label) for v in var_names]
+    contributions = by_indicator.groupby(pd.Index(labels, name="group")).sum()
+    contributions.name = "contribution"
+    contributions = contributions.sort_values(key=np.abs, ascending=False)
 
-    # For now, return filtered weights (which are exact for k <= t_target)
-    return W_f
+    return {
+        "contributions": contributions,
+        "by_indicator": by_indicator,
+        "bci": float(contrib_by_var.sum()),
+        "target_time": res["target_time"],
+        "target_date": res["target_date"],
+    }
 
 
 def compute_news_revision(

@@ -357,6 +357,59 @@ class TestMFDFM(unittest.TestCase):
             (model.data_.T, model.data_.n),
         )
 
+    def test_observation_weights_reconstruct_bci(self):
+        """Exact smoother weights reconstruct the BCI to numerical precision."""
+        model = MFDFM(n_factors=2, n_lags=1)
+        model.fit(
+            self.d_small["data"],
+            self.d_small["quarterly_vars"],
+            self.d_small["gdp_var"],
+        )
+        res = model.observation_weights()
+        bci_w = res["bci_weights"]
+        Y = np.nan_to_num(model.data_.Y, nan=0.0)
+        recon = np.sum(bci_w * Y)
+        bci_t = model.business_cycle_index.iloc[res["target_time"]]
+        self.assertAlmostEqual(recon, bci_t, places=8)
+
+    def test_group_contributions(self):
+        """Group contributions sum to the BCI and to the per-indicator sum."""
+        model = MFDFM(n_factors=2, n_lags=1)
+        model.fit(
+            self.d_small["data"],
+            self.d_small["quarterly_vars"],
+            self.d_small["gdp_var"],
+        )
+        # Assign every variable to one of two arbitrary groups.
+        names = model.data_.var_names
+        groups = {v: ("A" if i % 2 == 0 else "B") for i, v in enumerate(names)}
+        res = model.group_contributions(groups)
+
+        bci_t = model.business_cycle_index.iloc[res["target_time"]]
+        self.assertAlmostEqual(res["bci"], bci_t, places=8)
+        self.assertAlmostEqual(
+            res["contributions"].sum(), bci_t, places=8
+        )
+        self.assertAlmostEqual(
+            res["by_indicator"].sum(), bci_t, places=8
+        )
+        self.assertEqual(set(res["contributions"].index), {"A", "B"})
+
+    def test_group_contributions_other_label(self):
+        """Unlisted indicators are pooled under the 'other' label."""
+        model = MFDFM(n_factors=2, n_lags=1)
+        model.fit(
+            self.d_small["data"],
+            self.d_small["quarterly_vars"],
+            self.d_small["gdp_var"],
+        )
+        # Map only the GDP variable; everything else falls through to 'other'.
+        groups = {model.data_.gdp_var: "gdp"}
+        res = model.group_contributions(groups)
+        self.assertIn("other", res["contributions"].index)
+        bci_t = model.business_cycle_index.iloc[res["target_time"]]
+        self.assertAlmostEqual(res["contributions"].sum(), bci_t, places=8)
+
 
 class TestIntegration(unittest.TestCase):
 
